@@ -27,7 +27,7 @@ Executable socks5
   Build-depends:
     base ==4.5.*,
     async,
-    attoparsec,
+    binary,
     bytestring (== 0.9.*),
     network,
     transformers (>= 0.2 && < 0.4),
@@ -35,5 +35,5 @@ Executable socks5
     pipes-safe >= 1.1 && < 1.3,
     pipes-parse == 1.0.*,
     pipes-network >= 0.5.1 && < 0.6,
-    pipes-attoparsec >= 0.2.0 && < 0.3
+    pipes-binary >= 0.1.0 && < 0.2
 

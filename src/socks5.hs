@@ -1,6 +1,10 @@
-import           Data.ByteString            as B (ByteString, pack)
-import           Data.Binary.Get                 (Get)
+import           Data.Binary
+import           Data.Binary.Get
+import           Data.Binary.Put
+import           Data.ByteString            as B (ByteString, length, pack)
 
+import           Control.Applicative
+import           Control.Monad
 import           Data.Monoid
 import           Data.Word
 
@@ -9,8 +13,8 @@ import           Network.Socket
 import           Control.Concurrent.Async
 
 import           Control.Proxy              as P
-import           Control.Proxy.Binary       as P
-import           Control.Proxy.Parse        as P
+import qualified Control.Proxy.Binary       as P
+import qualified Control.Proxy.Parse        as P
 import           Control.Proxy.TCP          as P
 import           Control.Proxy.Trans.Either as P
 
@@ -41,40 +45,50 @@ import           Control.Proxy.Trans.Either as P
 --}
 
 data Socks5Addr = Socks5Addr4 HostAddress PortNumber
-              | Socks5AddrFQDN B.ByteString PortNumber
-              | Socks5Addr6 HostAddress6 PortNumber
+                | Socks5AddrFQDN ByteString PortNumber
+                | Socks5Addr6 HostAddress6 PortNumber
 
-instance Socks5Addr where
+instance Binary Socks5Addr where
     get = do
         atyp <- getWord8
-        dst  <- case atyp of
-            1 -> getAddr4
-            4 -> getAddr6
-            3 -> getAddrFqdn
-            _ -> fail "does not compute"
-        where
-            getAddr4 = Socks5Addr4 <$> getWord32be <*> getWord16be
-            getAddr6 = do
+        case atyp of
+            1 -> Socks5Addr4 <$> getWord32be <*> getWord16be
+            4 -> do
                 w1 <- getWord32be
                 w2 <- getWord32be
                 w3 <- getWord32be
                 w4 <- getWord32be
                 p  <- getWord16be
                 return Socks5Addr6 (w1, w2, w3, w4) p
-            getAddrFqdn = do
+            3 -> do
                 len  <- getWord8
                 addr <- getByteString len
                 p    <- getWord16be
                 return Socks5AddrFQDN addr p
+            _ -> fail "does not compute"
 
-    put = undefined
+    put (Socks5Addr4 w p)                = do
+        putWord32be w
+        putWord16be p
+
+    put (Socks5Addr6 (w1, w2, w3, w4) p) = do
+        putWord32be w1
+        putWord32be w2
+        putWord32be w3
+        putWord32be w4
+        putWord16be p
+
+    put (Socks5AddrFQDN addr p)          = do
+        putWord8 $ fromIntegral $ B.length addr
+        putByteString addr
+        putWord16be p
 
 data AuthMSG = Methods [Word8]
 
 word8 :: Word8 -> Get Word8
 word8 word = do
     res <- get
-    if (word == res)
+    if word == res
         then return res
         else fail "match failed"
 
@@ -87,13 +101,11 @@ reserved = word8 0
 authMsg :: Get AuthMSG
 authMsg = do
     _   <- sockVer
-    num <- get
-    return $ sequence $ replicate (fromIntegral num) get
-
+    num <- get >>= liftM fromIntegral
+    return $ replicateM num get
 
 authResp :: B.ByteString
 authResp = B.pack [5, 0]
-
 
 cmdMsg :: Get (Word8, Socks5Addr)
 cmdMsg = do
@@ -111,7 +123,7 @@ cmdResp dst =
 handshake
   :: (Proxy p, Monad m) =>
   () -> P.Pipe
-            (P.EitherP P.ParsingError (P.StateP [B.ByteString] p))
+            (P.EitherP P.DecodingError (P.StateP [B.ByteString] p))
             (Maybe B.ByteString)
             B.ByteString
             m Socks5Addr
@@ -119,29 +131,27 @@ handshake () = do
     methods <- P.decode authMsg
     case pick methods of
         Nothing -> fail "fail"
-        just _  -> do
+        Just _  -> do
             P.respond authResp
             (_, dst) <- P.decode cmdMsg
-            -- P.respond $ cmdResp dst
             return dst
+    where
+        pick = undefined
 
 main :: IO ()
 main = serve (Host "127.0.0.1") "8000" $ \(cs, _) -> do
-    (x, leftovers) <- P.runProxy $ P.runStateK mempty $ P.runEitherK $
-        wrap . socketReadS 4096 cs >-> handshake >-> socketWriteD cs
+    x <- P.runProxy $ P.evalStateK mempty $ P.runEitherK $
+        P.wrap . socketReadS 4096 cs >-> handshake >-> socketWriteD cs
     case x of
-        Left _ -> -- todo send failed response
+        Left _ -> undefined -- todo send failed response
+            -- P.respond $ cmdResp dst
         Right dst ->
-
             P.connect addr port $ \(ss, _ ) -> do
-                s1 <- async (runProxy $ combined              >-> P.socketWriteD ss)
+                -- P.respond $ cmdResp dst
+                s1 <- async (runProxy $ P.socketReadS 4096 cs >-> P.socketWriteD ss)
                 s2 <- async (runProxy $ P.socketReadS 4096 ss >-> P.socketWriteD cs)
                 waitEither_ s1 s2
             where
                 addr = undefined
                 port = undefined
-                -- Leftovers come before further reads from the `cs` socket
-                combined () = do
-                    mapM_ respond leftovers
-                    P.socketReadS 4096 cs ()
 
