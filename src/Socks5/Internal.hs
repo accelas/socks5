@@ -90,6 +90,7 @@ instance Binary CmdMSG where
     get = do
         _    <- sockVer
         cmd  <- get
+        _    <- reserved
         addr <- get
         return $ CmdMSG (cmd, addr)
 
@@ -119,6 +120,7 @@ instance Binary CmdResp where
     get = do
         _    <- sockVer
         cmd  <- get
+        _    <- reserved
         addr <- get
         return $ CmdResp (cmd, Just addr)
 
@@ -147,27 +149,29 @@ instance Binary Socks5Addr where
         case atyp of
             1 -> do
                 h <- getWord32be
-                p <- getWord16be
+                p <- getWord16host
                 return $ Socks5Addr4 h (NS.PortNum p)
             4 -> do
                 w1 <- getWord32be
                 w2 <- getWord32be
                 w3 <- getWord32be
                 w4 <- getWord32be
-                p  <- getWord16be
+                p  <- getWord16host
                 return $ Socks5Addr6 (w1, w2, w3, w4) (NS.PortNum p)
             3 -> do
                 len  <- getWord8
                 addr <- getByteString $ fromIntegral len
-                p    <- getWord16be
+                p    <- getWord16host
                 return $ Socks5AddrFQDN addr (NS.PortNum p)
             _ -> fail "Invalid Address type"
 
     put (Socks5Addr4 w (NS.PortNum p))                = do
+        putWord8 1
         putWord32be w
         putWord16be p
 
     put (Socks5Addr6 (w1, w2, w3, w4) (NS.PortNum p)) = do
+        putWord8 4
         putWord32be w1
         putWord32be w2
         putWord32be w3
@@ -175,6 +179,7 @@ instance Binary Socks5Addr where
         putWord16be p
 
     put (Socks5AddrFQDN addr (NS.PortNum p))          = do
+        putWord8 3
         putWord8 $ fromIntegral $ B.length addr
         putByteString addr
         putWord16be p

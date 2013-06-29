@@ -3,13 +3,13 @@ import           Data.ByteString.Lazy       as BL (toStrict)
 
 import           Data.Binary                as Bin (Binary, encode)
 import           Data.Monoid
-
+import Debug.Trace
 import           Control.Concurrent.Async
 
 import           Control.Proxy              as P
 import qualified Control.Proxy.Binary       as P
 import qualified Control.Proxy.Parse        as P (wrap)
-import qualified Control.Proxy.TCP          as P (serve, HostPreference(..), socketReadS, socketWriteD)
+import qualified Control.Proxy.TCP          as P (serve, HostPreference(..), connect, socketReadS, socketWriteD)
 import           Control.Proxy.Trans.Either as P (EitherP, runEitherK)
 import           Control.Proxy.Trans.State  as P (StateP, evalStateK)
 
@@ -25,13 +25,14 @@ handshake () =  do
     AuthMSG (_, _) <- P.decode
     P.respond $ toStrictByteString authSuccess
     CmdMSG (_, dst) <- P.decode
+    P.respond $ toStrictByteString $ connSuccess dst
     return dst
 
 toStrictByteString :: Bin.Binary a => a -> B.ByteString
 toStrictByteString = BL.toStrict . Bin.encode
 
 main :: IO ()
-main = P.serve (P.Host "127.0.0.1") "8000" $ \(cs, _) -> do
+main = P.serve (P.Host "127.0.0.1") "8000" $ \(cs, caddr) -> trace ("request from " ++ show caddr ) $ do
     let sendMsg msg = runProxy $
             -- why does this line need 4 more space of indentation?!
             (\() -> P.respond $ toStrictByteString msg) >-> P.socketWriteD cs
@@ -41,9 +42,8 @@ main = P.serve (P.Host "127.0.0.1") "8000" $ \(cs, _) -> do
 
     case res of
         Left _ -> sendMsg authError
-        Right dst ->
-            I.connect host port notify $ \(ss, _ ) -> do
-                sendMsg $ connSuccess dst
+        Right dst -> trace ("connecting " ++ host ++ ":" ++ port) $ 
+            P.connect host port $ \(ss, _ ) -> trace ("connetion established") $ do
                 s1 <- async (runProxy $ P.socketReadS 4096 cs >-> P.socketWriteD ss)
                 s2 <- async (runProxy $ P.socketReadS 4096 ss >-> P.socketWriteD cs)
                 waitEither_ s1 s2
